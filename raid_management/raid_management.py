@@ -51,7 +51,7 @@ def get_resource(rhost, uri, auth=None, verify=True, nossl=False):
     return False, name, uri, None
 
 
-def get_members(rhost, data, auth=None, verify=True, nossl=False):
+def get_members(data, rhost, auth=None, verify=True, nossl=False):
     # TODO: exception handling
     member_list = list()
     if data is not None:
@@ -103,7 +103,7 @@ def process_system(system, rhost, auth=None, verify=True, nossl=False):
         resource = get_resource(rhost, storage_uri, auth=auth, verify=verify, nossl=nossl)
         store_success, store_name, store_uri, store_data = resource
         if store_success and store_data is not None:
-            storage_list = get_members(rhost, store_data, auth=auth, verify=verify, nossl=nossl)
+            storage_list = get_members(store_data, rhost, auth=auth, verify=verify, nossl=nossl)
             for storage in storage_list:
                 process_storage(storage, rhost, auth=auth, verify=verify, nossl=nossl)
         else:
@@ -177,7 +177,7 @@ def main(argv):
             systems = get_resource(rhost, systems_uri, auth=auth, verify=verify, nossl=nossl)
             success, name, uri, data = systems
             if success and data is not None:
-                sys_list = get_members(rhost, data, auth=auth, verify=verify, nossl=nossl)
+                sys_list = get_members(data, rhost, auth=auth, verify=verify, nossl=nossl)
                 for system in sys_list:
                     process_system(system, rhost, auth=auth, verify=verify, nossl=nossl)
             else:
