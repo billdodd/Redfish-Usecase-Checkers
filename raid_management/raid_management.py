@@ -26,9 +26,13 @@ def proto(nossl=True):
 def get_uri(resource_name, data):
     if resource_name in data:
         resource = data.get(resource_name)
-        return resource.get('@odata.id')
+        if '@odata.id' in resource:
+            return resource.get('@odata.id')
+        else:
+            logging.warning("get_uri: '@odata.id' not found in resource '{}'".format(resource_name))
+            return None
     else:
-        logging.warning("get_uri: Resource '{}' not found in data payload")
+        logging.warning("get_uri: Resource '{}' not found in data payload".format(resource_name))
         return None
 
 
@@ -72,21 +76,81 @@ def get_members(data, rhost, auth=None, verify=True, nossl=False):
     return member_list
 
 
+def process_volume(volume, rhost, auth=None, verify=True, nossl=False):
+    vol_success, vol_name, vol_uri, vol_data = volume
+    logging.debug("process_volume: volume name = {}, uri = {}, successfully read = {}"
+                  .format(vol_name, vol_uri, vol_success))
+    # TODO: process volume
+
+
+def process_drive(drive_data, rhost, auth=None, verify=True, nossl=False):
+    logging.debug("process_drive: drive data = {}".format(drive_data))
+    # TODO: process drive
+
+
+def process_controller(controller_data, rhost, auth=None, verify=True, nossl=False):
+    logging.debug("process_controller: controller data = {}".format(controller_data))
+    # TODO: process controller
+
+
 def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
     store_success, store_name, store_uri, store_data = storage
     logging.debug("process_storage: system name = {}, uri = {}, successfully read = {}"
                   .format(store_name, store_uri, store_success))
     if store_success and store_data is not None:
-        # TODO: process 'StorageControllers' (array)
         controllers = store_data.get('StorageControllers')
         logging.debug("process_storage: 'StorageControllers' = {}".format(controllers))
-        # TODO: process 'Drives' (array)
+        for controller in controllers:
+            logging.debug("process_storage: controller = {}".format(controller))
+            if '@odata.id' in controller:
+                controller_uri = controller.get('@odata.id')
+                if '#' in controller_uri and '@odata.type' in controller:
+                    # inline case
+                    ctrl_success, ctrl_data = True, controller
+                else:
+                    # follow uri reference case
+                    resource = get_resource(rhost, controller_uri, auth=auth, verify=verify, nossl=nossl)
+                    ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
+                if ctrl_success and ctrl_data is not None:
+                    process_controller(ctrl_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                else:
+                    logging.error("process_storage: unable to read controller resource from uri {}"
+                                  .format(controller_uri))
+            else:
+                logging.error("process_storage: '@odata.id' not found in controller element '{}'".format(controller))
         drives = store_data.get('Drives')
         logging.debug("process_storage: 'Drives' = {}".format(drives))
-        # TODO: process 'Volumes' (collection)
+        for drive in drives:
+            logging.debug("process_storage: drive = {}".format(drive))
+            if '@odata.id' in drive:
+                drive_uri = drive.get('@odata.id')
+                if '#' in drive_uri and '@odata.type' in drive:
+                    # inline case
+                    drive_success, drive_data = True, drive
+                else:
+                    # follow uri reference case
+                    resource = get_resource(rhost, drive_uri, auth=auth, verify=verify, nossl=nossl)
+                    drive_success, drive_name, drive_uri, drive_data = resource
+                if drive_success and drive_data is not None:
+                    process_drive(drive_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                else:
+                    logging.error("process_storage: unable to read drive resource from uri {}"
+                                  .format(drive_uri))
+            else:
+                logging.error("process_storage: '@odata.id' not found in drive element '{}'".format(drive))
         volumes_uri = get_uri('Volumes', store_data)
-        logging.debug("process_storage: 'Volumes' uri = {}".format(volumes_uri))
-        resource = get_resource(rhost, volumes_uri, auth=auth, verify=verify, nossl=nossl)
+        if volumes_uri is not None:
+            logging.debug("process_storage: 'Volumes' uri = {}".format(volumes_uri))
+            resource = get_resource(rhost, volumes_uri, auth=auth, verify=verify, nossl=nossl)
+            vol_success, vol_name, vol_uri, vol_data = resource
+            if vol_success and vol_data is not None:
+                vol_list = get_members(vol_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                for volume in vol_list:
+                    process_volume(volume, rhost, auth=auth, verify=verify, nossl=nossl)
+            else:
+                logging.error("process_storage: unable to read 'Volumes' resource from uri {}".format(volumes_uri))
+        else:
+            logging.error("process_storage: 'Volumes' uri not found")
     else:
         logging.error("process_storage: unable to get data payload for storage {} at uri {}"
                       .format(store_name, store_uri))
@@ -99,15 +163,18 @@ def process_system(system, rhost, auth=None, verify=True, nossl=False):
                   .format(sys_name, sys_uri, sys_success))
     if sys_success and sys_data is not None:
         storage_uri = get_uri('Storage', sys_data)
-        logging.debug("process_system: 'Storage' uri = {}".format(storage_uri))
-        resource = get_resource(rhost, storage_uri, auth=auth, verify=verify, nossl=nossl)
-        store_success, store_name, store_uri, store_data = resource
-        if store_success and store_data is not None:
-            storage_list = get_members(store_data, rhost, auth=auth, verify=verify, nossl=nossl)
-            for storage in storage_list:
-                process_storage(storage, rhost, auth=auth, verify=verify, nossl=nossl)
+        if storage_uri is not None:
+            logging.debug("process_system: 'Storage' uri = {}".format(storage_uri))
+            resource = get_resource(rhost, storage_uri, auth=auth, verify=verify, nossl=nossl)
+            store_success, store_name, store_uri, store_data = resource
+            if store_success and store_data is not None:
+                storage_list = get_members(store_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                for storage in storage_list:
+                    process_storage(storage, rhost, auth=auth, verify=verify, nossl=nossl)
+            else:
+                logging.error("process_system: unable to read 'Storage' resource from system uri {}".format(sys_uri))
         else:
-            logging.error("process_system: unable to read 'Storage' resource from system uri {}".format(sys_uri))
+            logging.error("process_system: 'Storage' uri not found")
     else:
         logging.error("process_system: unable to get data payload for system {} at uri {}".format(sys_name, sys_uri))
 
