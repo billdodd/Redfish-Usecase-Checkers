@@ -36,6 +36,29 @@ def get_uri(resource_name, data):
         return None
 
 
+def log_success(results, test_name):
+    """
+    Add success result to Results object
+
+    :param results: instance of Results object to update
+    :param test_name: name of the test that passed
+    """
+    results.update_test_results(test_name, 0, None)
+
+
+def log_error(results, function_name, test_name, message):
+    """
+    Add error result to Results object and log error via python logging
+
+    :param results: instance of Results object to update
+    :param function_name: name of the function generating the error
+    :param test_name: name of the test that failed
+    :param message: error message for the failure
+    """
+    logging.error(function_name + ": " + message)
+    results.update_test_results(test_name, 1, message)
+
+
 def get_resource(rhost, uri, results, validator, auth=None, verify=True, nossl=False):
     # TODO: return tuple: what are needed values to return? Include error message?
     name = uri.split('/')[-1]
@@ -45,6 +68,7 @@ def get_resource(rhost, uri, results, validator, auth=None, verify=True, nossl=F
         if r.status_code == requests.codes.ok:
             d = r.json(object_pairs_hook=OrderedDict)
             if d is not None:
+                log_success(results, "Read Resource")
                 logging.debug("get_resource: {} resource: {}".format(name, d))
                 schema = validator.get_json_schema(d)
                 rc, msg, skipped = 0, None, False
@@ -55,11 +79,14 @@ def get_resource(rhost, uri, results, validator, auth=None, verify=True, nossl=F
                 results.update_test_results("Schema validation", rc, msg, skipped=skipped)
                 return True, name, uri, d
             else:
-                logging.error("get_resource: No JSON content for {} found in response".format(uri))
+                log_error(results, "get_resource", "Read Resource",
+                          "No JSON content for {} found in response".format(uri))
         else:
-            logging.error("get_resource: Received unexpected response for resource {}: {}".format(name, r))
+            log_error(results, "get_resource", "Read Resource",
+                      "Received unexpected response for resource {}: response = {}".format(name, r))
     except requests.exceptions.RequestException as e:
-        logging.error("get_resource: Exception received while tying to fetch uri {}, error = {}".format(uri, e))
+        log_error(results, "get_resource", "Read Resource",
+                  "Exception received while tying to fetch uri {}, error = {}".format(uri, e))
     return False, name, uri, None
 
 
@@ -69,35 +96,29 @@ def get_members(data, rhost, results, validator, auth=None, verify=True, nossl=F
         logging.debug("get_members: Resource: {}".format(data))
         members = data.get('Members')
         if members is not None:
+            log_success(results, "Read Members")
             for member in members:
                 uri = member.get('@odata.id')
                 if uri is not None:
+                    log_success(results, "Read @odata.id for Member")
                     member_list.append(get_resource(rhost, uri, results, validator, auth=auth, verify=verify,
                                                     nossl=nossl))
                 else:
-                    logging.error("get_members: No '@odata.id' found for member {}".format(member))
+                    log_error(results, "get_members", "Read @odata.id for Member",
+                              "No '@odata.id' found for member")
         else:
-            logging.error("get_members: No 'Members' found in resource")
+            log_error(results, "get_members", "Read Members", "No 'Members' found in resource")
     else:
-        logging.error("get_members: No JSON content for resource found in response")
+        log_error(results, "get_members", "Read Members", "No JSON content for resource found in response")
     return member_list
 
 
-def process_volume(volume, rhost, results, validator, auth=None, verify=True, nossl=False):
-    vol_success, vol_name, vol_uri, vol_data = volume
-    logging.debug("process_volume: volume name = {}, uri = {}, successfully read = {}"
-                  .format(vol_name, vol_uri, vol_success))
-    # TODO: process volume
-
-
-def process_drive(drive_data, rhost, results, validator, auth=None, verify=True, nossl=False):
-    logging.debug("process_drive: drive data = {}".format(drive_data))
-    # TODO: process drive
-
-
-def process_controller(controller_data, rhost, results, validator, auth=None, verify=True, nossl=False):
-    logging.debug("process_controller: controller data = {}".format(controller_data))
-    # TODO: process controller
+def modify_volume(rhost, uri, hot_spare, results, validator, auth=None, verify=True, nossl=False):
+    logging.debug("modify_volume: Exercising Volumes uri {}".format(uri))
+    # TODO: POST to create volume
+    # TODO: PATCH to assign hot spare
+    # TODO: GET to validate the created volume
+    # TODO: DELETE to delete the volume
 
 
 def process_storage(storage, rhost, results, validator, auth=None, verify=True, nossl=False):
@@ -105,11 +126,14 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
     logging.debug("process_storage: system name = {}, uri = {}, successfully read = {}"
                   .format(store_name, store_uri, store_success))
     if store_success and store_data is not None:
+        log_success(results, "Read Storage Member")
+        # StorageControllers
         controllers = store_data.get('StorageControllers')
         logging.debug("process_storage: 'StorageControllers' = {}".format(controllers))
         for controller in controllers:
             logging.debug("process_storage: controller = {}".format(controller))
             if '@odata.id' in controller:
+                log_success(results, "Read @odata.id for Controller")
                 controller_uri = controller.get('@odata.id')
                 if '#' in controller_uri and '@odata.type' in controller:
                     # inline case
@@ -120,17 +144,22 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                                             nossl=nossl)
                     ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
                 if ctrl_success and ctrl_data is not None:
-                    process_controller(ctrl_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+                    log_success(results, "Read Controller")
+                    pass
                 else:
-                    logging.error("process_storage: unable to read controller resource from uri {}"
-                                  .format(controller_uri))
+                    log_error(results, "process_storage", "Read Controller",
+                              "Unable to read controller resource from uri {}".format(controller_uri))
             else:
-                logging.error("process_storage: '@odata.id' not found in controller element '{}'".format(controller))
+                log_error(results, "process_storage", "Read @odata.id for Controller",
+                          "'@odata.id' not found in controller element")
+        # Drives
+        hot_spare = None
         drives = store_data.get('Drives')
         logging.debug("process_storage: 'Drives' = {}".format(drives))
         for drive in drives:
             logging.debug("process_storage: drive = {}".format(drive))
             if '@odata.id' in drive:
+                log_success(results, "Read @odata.id for Drive")
                 drive_uri = drive.get('@odata.id')
                 if '#' in drive_uri and '@odata.type' in drive:
                     # inline case
@@ -140,51 +169,65 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                     resource = get_resource(rhost, drive_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
                     drive_success, drive_name, drive_uri, drive_data = resource
                 if drive_success and drive_data is not None:
-                    process_drive(drive_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+                    log_success(results, "Read Drive")
+                    if hot_spare is None:
+                        # save a drive_uri for use as a RAID hot spare
+                        hot_spare = drive_uri
+                    pass
                 else:
-                    logging.error("process_storage: unable to read drive resource from uri {}"
-                                  .format(drive_uri))
+                    log_error(results, "process_storage", "Read Drive",
+                              "Unable to read drive resource from uri {}".format(drive_uri))
             else:
-                logging.error("process_storage: '@odata.id' not found in drive element '{}'".format(drive))
+                log_error(results, "process_storage", "Read @odata.id for Drive",
+                          "'@odata.id' not found in drive element")
+        # Volumes
         volumes_uri = get_uri('Volumes', store_data)
         if volumes_uri is not None:
             logging.debug("process_storage: 'Volumes' uri = {}".format(volumes_uri))
             resource = get_resource(rhost, volumes_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
-            vol_success, vol_name, vol_uri, vol_data = resource
-            if vol_success and vol_data is not None:
-                vol_list = get_members(vol_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
-                for volume in vol_list:
-                    process_volume(volume, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+            vols_success, vols_name, vols_uri, vols_data = resource
+            if vols_success and vols_data is not None:
+                log_success(results, "Read Volumes")
+                vols_list = get_members(vols_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+                for volume in vols_list:
+                    vol_success, vol_name, vol_uri, vol_data = volume
+                    logging.debug("process_storage: Volume uri = {}".format(vol_uri))
+                    pass
             else:
-                logging.error("process_storage: unable to read 'Volumes' resource from uri {}".format(volumes_uri))
+                log_error(results, "process_storage", "Read Volumes",
+                          "Unable to read 'Volumes' resource from uri {}".format(volumes_uri))
+            modify_volume(rhost, volumes_uri, hot_spare, results, validator, auth=auth, verify=verify, nossl=nossl)
         else:
-            logging.error("process_storage: 'Volumes' uri not found")
+            log_error(results, "process_storage", "Read Volumes", "'Volumes' uri not found")
     else:
-        logging.error("process_storage: unable to get data payload for storage {} at uri {}"
-                      .format(store_name, store_uri))
+        log_error(results, "process_storage", "Read Storage Member",
+                  "Unable to get data payload for storage {} at uri {}".format(store_name, store_uri))
 
 
 def process_system(system, rhost, results, validator, auth=None, verify=True, nossl=False):
-    # TODO: take a look at this tuple - are these the right values?
     sys_success, sys_name, sys_uri, sys_data = system
     logging.debug("process_system: system name = {}, uri = {}, successfully read = {}"
                   .format(sys_name, sys_uri, sys_success))
     if sys_success and sys_data is not None:
+        log_success(results, "Read System")
         storage_uri = get_uri('Storage', sys_data)
         if storage_uri is not None:
             logging.debug("process_system: 'Storage' uri = {}".format(storage_uri))
             resource = get_resource(rhost, storage_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             store_success, store_name, store_uri, store_data = resource
             if store_success and store_data is not None:
+                log_success(results, "Read Storage")
                 storage_list = get_members(store_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 for storage in storage_list:
                     process_storage(storage, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
             else:
-                logging.error("process_system: unable to read 'Storage' resource from system uri {}".format(sys_uri))
+                log_error(results, "process_system", "Read Storage",
+                          "Unable to read 'Storage' resource from system uri {}".format(sys_uri))
         else:
-            logging.error("process_system: 'Storage' uri not found")
+            log_error(results, "process_system", "Read Storage", "'Storage' uri not found")
     else:
-        logging.error("process_system: unable to get data payload for system {} at uri {}".format(sys_name, sys_uri))
+        log_error(results, "process_system", "Read System",
+                  "Unable to get data payload for system {} at uri {}".format(sys_name, sys_uri))
 
 
 def get_service_root(rhost, auth=None, verify=True, nossl=False):
@@ -257,22 +300,25 @@ def main(argv):
     validator = SchemaValidation(rhost, service_root, results, auth=auth, nossl=nossl)
 
     if service_root is not None:
+        log_success(results, "Read Service Root")
         systems_uri = get_uri('Systems', service_root)
         if systems_uri is not None:
             systems = get_resource(rhost, systems_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             success, name, uri, data = systems
             if success and data is not None:
+                log_success(results, "Read Systems")
                 sys_list = get_members(data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 for system in sys_list:
                     process_system(system, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
             else:
-                logging.error("main: unable to read 'Systems' resource from target system {}".format(rhost))
+                log_error(results, "main", "Read Systems",
+                          "Unable to read 'Systems' resource from target system {}".format(rhost))
         else:
-            logging.error("main: unable to get 'Systems' URI from target system {}".format(rhost))
+            log_error(results, "main", "Read Systems",
+                      "Unable to get 'Systems' URI from target system {}".format(rhost))
     else:
-        logging.error("main: unable to retrieve Service Root from target system {}".format(rhost))
-
-    # TODO: verify results
+        log_error(results, "Read Service Root", "main",
+                  "Unable to retrieve Service Root from target system {}".format(rhost))
 
     log_results(results)
     exit(results.get_return_code())
