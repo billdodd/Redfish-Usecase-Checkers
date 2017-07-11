@@ -12,7 +12,7 @@ import toolspath
 
 from collections import OrderedDict
 from usecase.results import Results
-# from usecase.validation import SchemaValidation
+from usecase.validation import SchemaValidation
 
 
 def proto(nossl=True):
@@ -36,37 +36,44 @@ def get_uri(resource_name, data):
         return None
 
 
-def get_resource(rhost, uri, auth=None, verify=True, nossl=False):
-    # TODO: exception handling
+def get_resource(rhost, uri, results, validator, auth=None, verify=True, nossl=False):
     # TODO: return tuple: what are needed values to return? Include error message?
     name = uri.split('/')[-1]
     logging.debug("get_resource: Getting {} resource with uri {}".format(name, uri))
-    r = requests.get(proto(nossl=nossl) + '://' + rhost + uri, auth=auth, verify=verify)
-    if r.status_code == requests.codes.ok:
-        d = r.json(object_pairs_hook=OrderedDict)
-        if d is not None:
-            logging.debug("get_resource: {} resource: {}".format(name, d))
-            # TODO: validate JSON
-            return True, name, uri, d
+    try:
+        r = requests.get(proto(nossl=nossl) + '://' + rhost + uri, auth=auth, verify=verify)
+        if r.status_code == requests.codes.ok:
+            d = r.json(object_pairs_hook=OrderedDict)
+            if d is not None:
+                logging.debug("get_resource: {} resource: {}".format(name, d))
+                schema = validator.get_json_schema(d)
+                rc, msg, skipped = 0, None, False
+                if schema is not None:
+                    rc, msg = validator.validate_json(d, schema)
+                else:
+                    skipped = True
+                results.update_test_results("Schema validation", rc, msg, skipped=skipped)
+                return True, name, uri, d
+            else:
+                logging.error("get_resource: No JSON content for {} found in response".format(uri))
         else:
-            logging.error("get_resource: No JSON content for {} found in response".format(uri))
-    else:
-        logging.error("get_resource: Received unexpected response for resource {}: {}".format(name, r))
+            logging.error("get_resource: Received unexpected response for resource {}: {}".format(name, r))
+    except requests.exceptions.RequestException as e:
+        logging.error("get_resource: Exception received while tying to fetch uri {}, error = {}".format(uri, e))
     return False, name, uri, None
 
 
-def get_members(data, rhost, auth=None, verify=True, nossl=False):
-    # TODO: exception handling
+def get_members(data, rhost, results, validator, auth=None, verify=True, nossl=False):
     member_list = list()
     if data is not None:
         logging.debug("get_members: Resource: {}".format(data))
-        # TODO: validate JSON
         members = data.get('Members')
         if members is not None:
             for member in members:
                 uri = member.get('@odata.id')
                 if uri is not None:
-                    member_list.append(get_resource(rhost, uri, auth=auth, verify=verify, nossl=nossl))
+                    member_list.append(get_resource(rhost, uri, results, validator, auth=auth, verify=verify,
+                                                    nossl=nossl))
                 else:
                     logging.error("get_members: No '@odata.id' found for member {}".format(member))
         else:
@@ -76,24 +83,24 @@ def get_members(data, rhost, auth=None, verify=True, nossl=False):
     return member_list
 
 
-def process_volume(volume, rhost, auth=None, verify=True, nossl=False):
+def process_volume(volume, rhost, results, validator, auth=None, verify=True, nossl=False):
     vol_success, vol_name, vol_uri, vol_data = volume
     logging.debug("process_volume: volume name = {}, uri = {}, successfully read = {}"
                   .format(vol_name, vol_uri, vol_success))
     # TODO: process volume
 
 
-def process_drive(drive_data, rhost, auth=None, verify=True, nossl=False):
+def process_drive(drive_data, rhost, results, validator, auth=None, verify=True, nossl=False):
     logging.debug("process_drive: drive data = {}".format(drive_data))
     # TODO: process drive
 
 
-def process_controller(controller_data, rhost, auth=None, verify=True, nossl=False):
+def process_controller(controller_data, rhost, results, validator, auth=None, verify=True, nossl=False):
     logging.debug("process_controller: controller data = {}".format(controller_data))
     # TODO: process controller
 
 
-def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
+def process_storage(storage, rhost, results, validator, auth=None, verify=True, nossl=False):
     store_success, store_name, store_uri, store_data = storage
     logging.debug("process_storage: system name = {}, uri = {}, successfully read = {}"
                   .format(store_name, store_uri, store_success))
@@ -109,10 +116,11 @@ def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
                     ctrl_success, ctrl_data = True, controller
                 else:
                     # follow uri reference case
-                    resource = get_resource(rhost, controller_uri, auth=auth, verify=verify, nossl=nossl)
+                    resource = get_resource(rhost, controller_uri, results, validator, auth=auth, verify=verify,
+                                            nossl=nossl)
                     ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
                 if ctrl_success and ctrl_data is not None:
-                    process_controller(ctrl_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                    process_controller(ctrl_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 else:
                     logging.error("process_storage: unable to read controller resource from uri {}"
                                   .format(controller_uri))
@@ -129,10 +137,10 @@ def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
                     drive_success, drive_data = True, drive
                 else:
                     # follow uri reference case
-                    resource = get_resource(rhost, drive_uri, auth=auth, verify=verify, nossl=nossl)
+                    resource = get_resource(rhost, drive_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
                     drive_success, drive_name, drive_uri, drive_data = resource
                 if drive_success and drive_data is not None:
-                    process_drive(drive_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                    process_drive(drive_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 else:
                     logging.error("process_storage: unable to read drive resource from uri {}"
                                   .format(drive_uri))
@@ -141,12 +149,12 @@ def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
         volumes_uri = get_uri('Volumes', store_data)
         if volumes_uri is not None:
             logging.debug("process_storage: 'Volumes' uri = {}".format(volumes_uri))
-            resource = get_resource(rhost, volumes_uri, auth=auth, verify=verify, nossl=nossl)
+            resource = get_resource(rhost, volumes_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             vol_success, vol_name, vol_uri, vol_data = resource
             if vol_success and vol_data is not None:
-                vol_list = get_members(vol_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                vol_list = get_members(vol_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 for volume in vol_list:
-                    process_volume(volume, rhost, auth=auth, verify=verify, nossl=nossl)
+                    process_volume(volume, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
             else:
                 logging.error("process_storage: unable to read 'Volumes' resource from uri {}".format(volumes_uri))
         else:
@@ -156,7 +164,7 @@ def process_storage(storage, rhost, auth=None, verify=True, nossl=False):
                       .format(store_name, store_uri))
 
 
-def process_system(system, rhost, auth=None, verify=True, nossl=False):
+def process_system(system, rhost, results, validator, auth=None, verify=True, nossl=False):
     # TODO: take a look at this tuple - are these the right values?
     sys_success, sys_name, sys_uri, sys_data = system
     logging.debug("process_system: system name = {}, uri = {}, successfully read = {}"
@@ -165,12 +173,12 @@ def process_system(system, rhost, auth=None, verify=True, nossl=False):
         storage_uri = get_uri('Storage', sys_data)
         if storage_uri is not None:
             logging.debug("process_system: 'Storage' uri = {}".format(storage_uri))
-            resource = get_resource(rhost, storage_uri, auth=auth, verify=verify, nossl=nossl)
+            resource = get_resource(rhost, storage_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             store_success, store_name, store_uri, store_data = resource
             if store_success and store_data is not None:
-                storage_list = get_members(store_data, rhost, auth=auth, verify=verify, nossl=nossl)
+                storage_list = get_members(store_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 for storage in storage_list:
-                    process_storage(storage, rhost, auth=auth, verify=verify, nossl=nossl)
+                    process_storage(storage, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
             else:
                 logging.error("process_system: unable to read 'Storage' resource from system uri {}".format(sys_uri))
         else:
@@ -183,9 +191,12 @@ def get_service_root(rhost, auth=None, verify=True, nossl=False):
     """
     Get Service Root information
     """
-    # TODO: exception handling
-    r = requests.get(proto(nossl=nossl) + '://' + rhost + '/redfish/v1', auth=auth, verify=verify)
-    return r.json(object_pairs_hook=OrderedDict)
+    try:
+        r = requests.get(proto(nossl=nossl) + '://' + rhost + '/redfish/v1', auth=auth, verify=verify)
+        return r.json(object_pairs_hook=OrderedDict)
+    except requests.exceptions.RequestException as e:
+        logging.error("get_service_root: Exception received while tying to fetch service root, error = {}".format(e))
+    return {}
 
 
 def log_results(results):
@@ -238,15 +249,22 @@ def main(argv):
 
     service_root = get_service_root(rhost, auth=auth, verify=verify, nossl=nossl)
 
+    results = Results("RAID Management Checker", service_root)
+    if output_dir is not None:
+        results.set_output_dir(output_dir)
+    results.add_cmd_line_args(args_list)
+
+    validator = SchemaValidation(rhost, service_root, results, auth=auth, nossl=nossl)
+
     if service_root is not None:
         systems_uri = get_uri('Systems', service_root)
         if systems_uri is not None:
-            systems = get_resource(rhost, systems_uri, auth=auth, verify=verify, nossl=nossl)
+            systems = get_resource(rhost, systems_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             success, name, uri, data = systems
             if success and data is not None:
-                sys_list = get_members(data, rhost, auth=auth, verify=verify, nossl=nossl)
+                sys_list = get_members(data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
                 for system in sys_list:
-                    process_system(system, rhost, auth=auth, verify=verify, nossl=nossl)
+                    process_system(system, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
             else:
                 logging.error("main: unable to read 'Systems' resource from target system {}".format(rhost))
         else:
@@ -255,13 +273,6 @@ def main(argv):
         logging.error("main: unable to retrieve Service Root from target system {}".format(rhost))
 
     # TODO: verify results
-
-    # TODO: log results
-
-    results = Results("RAID Management Checker", service_root)
-    if output_dir is not None:
-        results.set_output_dir(output_dir)
-    results.add_cmd_line_args(args_list)
 
     log_results(results)
     exit(results.get_return_code())
