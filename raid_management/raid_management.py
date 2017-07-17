@@ -5,6 +5,7 @@
 import argparse
 import logging
 import requests
+from requests.auth import HTTPBasicAuth
 import sys
 
 # noinspection PyUnresolvedReferences
@@ -113,9 +114,94 @@ def get_members(data, rhost, results, validator, auth=None, verify=True, nossl=F
     return member_list
 
 
-def modify_volume(rhost, uri, hot_spare, results, validator, auth=None, verify=True, nossl=False):
+def modify_volume(rhost, uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator, auth=None,
+                  verify=True, nossl=False):
     logging.debug("modify_volume: Exercising Volumes uri {}".format(uri))
+    logging.debug("modify_volume: auth = {}".format(auth))
+    credentials = None
+    if auth is not None:
+        logging.debug("modify_volume: username = {}".format(auth.username))
+        logging.debug("modify_volume: password = {}".format(auth.password))
+        credentials = {"username": auth.username, "password": auth.password}
+
+    # TODO: DELETE an existing volume
+    # Notes:
+    # If resource can never be deleted, a 405 is returned
+    # If DELETE specifies a collection, a 405 is returned
+    # 404 for bad request
+    # 202 for accepted - should be a Location header for a Task to query
+    # 200 for ok
+    # Deleted resource representation (content) may be returned in response body
+    if existing_vol_uri is not None:
+        logging.debug("modify_volume: deleting existing volume at {}".format(existing_vol_uri))
+        try:
+            r = requests.delete(proto(nossl=nossl) + '://' + rhost + existing_vol_uri,
+                                auth=auth, verify=verify, json=credentials)
+            logging.debug("modify_volume: status code from DELETE volume = {}".format(r.status_code))
+            logging.debug("modify_volume: response from DELETE volume = {}".format(r))
+            if r.status_code == requests.codes.bad_request:
+                logging.debug("modify_volume: response headers = {}".format(r.headers))
+                logging.debug("modify_volume: response reason = {}".format(r.reason))
+                logging.debug("modify_volume: response text = {}".format(r.text))
+                logging.debug("modify_volume: response JSON = {}".format(r.json()))
+            elif r.status_code == requests.codes.accepted:
+                logging.debug("modify_volume: response headers = {}".format(r.headers))
+                logging.debug("modify_volume: response text = {}".format(r.text))
+            r.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            log_error(results, "modify_volume", "Delete Volume",
+                      "Exception received while tying to delete Volume at uri {}, error = {}"
+                      .format(existing_vol_uri, e))
+    else:
+        logging.debug("modify_volume: no existing volume to delete")
     # TODO: POST to create volume
+    payload = {"@odata.context": "/redfish/v1/$metadata#Systems/Members/5966929f180b1301003d47b6/Storage/Members/1/Volumes/$entity",
+               "@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Volumes/0",
+               "@odata.type": "#Volume.1.0.2.Volume",
+               "Oem": {},
+               "Id": "0",
+               "Description": "",
+               "Name": "MAJEC",
+               "Status": {"Health": "OK"},
+               "CapacityBytes": 898313748480,
+               "VolumeType": "StripedWithParity",
+               "Identifiers":[],
+               "BlockSizeBytes": 512,
+               "Operations":
+                   [
+                       {"OperationName": "None", "PercentageComplete": 0}
+                   ],
+               "Links":
+                   {"Drives@odata.count": 4,
+                    "Drives": [
+                        {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/0"},
+                        {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/1"},
+                        {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/2"},
+                        {"@odata.id":"/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/3"}
+                    ]
+                    }
+               }
+    """
+    payload = {"Name": "RAID Usecase Checker Test Volume", "CapacityBytes": 256000000000, "VolumeType": "Mirrored"}
+    try:
+        r = requests.post(proto(nossl=nossl) + '://' + rhost + uri, json=payload, auth=auth, verify=verify)
+        # Notes:
+        # If POST not supported, a 405 is returned
+        # Successful response status is 201 (Created)
+        # Created resource URI shall be returned in Location header
+        # Created resource representation (content) may be returned in response body
+        logging.debug("modify_volume: status code from POST to create volume = {}".format(r.status_code))
+        logging.debug("modify_volume: response from POST to create volume = {}".format(r))
+        r.raise_for_status()
+        if r.status_code == requests.codes.ok:
+            d = r.json(object_pairs_hook=OrderedDict)
+            logging.debug("modify_volume: response payload from create volume: {}".format(d))
+        elif r.status_code == requests.codes.no_content:
+            logging.debug("modify_volume: response from create volume had no content")
+    except requests.exceptions.RequestException as e:
+        log_error(results, "modify_volume", "Create Volume",
+                  "Exception received while tying to create Volume in uri {}, error = {}".format(uri, e))
+    """
     # TODO: PATCH to assign hot spare
     # TODO: GET to validate the created volume
     # TODO: DELETE to delete the volume
@@ -133,7 +219,6 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
         for controller in controllers:
             logging.debug("process_storage: controller = {}".format(controller))
             if '@odata.id' in controller:
-                log_success(results, "Read @odata.id for Controller")
                 controller_uri = controller.get('@odata.id')
                 if '#' in controller_uri and '@odata.type' in controller:
                     # inline case
@@ -145,13 +230,12 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                     ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
                 if ctrl_success and ctrl_data is not None:
                     log_success(results, "Read Controller")
-                    pass
                 else:
                     log_error(results, "process_storage", "Read Controller",
                               "Unable to read controller resource from uri {}".format(controller_uri))
             else:
-                log_error(results, "process_storage", "Read @odata.id for Controller",
-                          "'@odata.id' not found in controller element")
+                # inline case
+                log_success(results, "Read Controller")
         # Drives
         hot_spare = None
         drives = store_data.get('Drives')
@@ -159,7 +243,6 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
         for drive in drives:
             logging.debug("process_storage: drive = {}".format(drive))
             if '@odata.id' in drive:
-                log_success(results, "Read @odata.id for Drive")
                 drive_uri = drive.get('@odata.id')
                 if '#' in drive_uri and '@odata.type' in drive:
                     # inline case
@@ -173,14 +256,14 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                     if hot_spare is None:
                         # save a drive_uri for use as a RAID hot spare
                         hot_spare = drive_uri
-                    pass
                 else:
                     log_error(results, "process_storage", "Read Drive",
                               "Unable to read drive resource from uri {}".format(drive_uri))
             else:
-                log_error(results, "process_storage", "Read @odata.id for Drive",
-                          "'@odata.id' not found in drive element")
+                # inline case
+                log_success(results, "Read Drive")
         # Volumes
+        existing_vol_uri, existing_vol_data = None, None
         volumes_uri = get_uri('Volumes', store_data)
         if volumes_uri is not None:
             logging.debug("process_storage: 'Volumes' uri = {}".format(volumes_uri))
@@ -192,11 +275,17 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                 for volume in vols_list:
                     vol_success, vol_name, vol_uri, vol_data = volume
                     logging.debug("process_storage: Volume uri = {}".format(vol_uri))
-                    pass
+                    logging.debug("process_storage: Volume data = {}".format(vol_data))
+                    if vol_success and vol_data is not None:
+                        if existing_vol_uri is None:
+                            # save an existing volume uri so we can delete it before creating new one
+                            existing_vol_uri = vol_uri
+                            existing_vol_data = vol_data
             else:
                 log_error(results, "process_storage", "Read Volumes",
                           "Unable to read 'Volumes' resource from uri {}".format(volumes_uri))
-            modify_volume(rhost, volumes_uri, hot_spare, results, validator, auth=auth, verify=verify, nossl=nossl)
+            modify_volume(rhost, volumes_uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator,
+                          auth=auth, verify=verify, nossl=nossl)
         else:
             log_error(results, "process_storage", "Read Volumes", "'Volumes' uri not found")
     else:
@@ -285,7 +374,9 @@ def main(argv):
 
     rhost = args.rhost
     output_dir = args.directory
-    auth = (args.user, args.password)
+    auth = None
+    if args.user is not None or args.password is not None:
+        auth = HTTPBasicAuth(args.user, args.password)
     # token = args.token
     nossl = args.nossl
     verify = not args.nochkcert
