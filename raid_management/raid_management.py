@@ -490,15 +490,18 @@ def main(argv):
     """
 
     # Parse command-line args
-    parser = argparse.ArgumentParser(description="Run a Redfish RAID management validation test")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="increase verbosity of output")
-    parser.add_argument("-d", "--directory", help="subdirectory to write summary results.json file to")
-    parser.add_argument("-r", "--rhost", help="target hostname or IP address with optional :port")
-    parser.add_argument("-u", "--user", help="username for authentication to the target host")
-    parser.add_argument("-p", "--password", help="password for authentication to the target host")
-    # parser.add_argument("-t", "--token", help="security token for authentication to the target host")
+    parser = argparse.ArgumentParser(description='Run a Redfish RAID management validation test')
+    parser.add_argument('-v', '--verbose', action='count', default=0, help='increase verbosity of output')
+    parser.add_argument('-d', '--directory', help='subdirectory to write summary results.json file to')
+    parser.add_argument('-r', '--rhost', help='target hostname or IP address with optional :port')
+    parser.add_argument('-u', '--user', help='username for authentication to the target host')
+    parser.add_argument('-p', '--password', help='password for authentication to the target host')
+    # parser.add_argument('-t', '--token', help='security token for authentication to the target host')
     parser.add_argument('--nossl', action='store_true', help='use http instead of https')
-    parser.add_argument('--nochkcert', action='store_true', help='ignore check for certificate')
+    parser.add_argument('--nochkcert', action='store_true', help='disable certificate verification check')
+    parser.add_argument('--ca-bundle', help='path to Certificate Authority bundle file or directory')
+    parser.add_argument('--http-proxy', help='URL for the HTTP proxy')
+    parser.add_argument('--https-proxy', help='URL for the HTTPS proxy')
 
     args = parser.parse_args()
 
@@ -512,11 +515,11 @@ def main(argv):
 
     args_list = [argv[0]]
     for name, value in vars(args).items():
-        if name in ["password", "token"]:
-            args_list.append(name + "=" + "********")
+        if name in ['password', 'token']:
+            args_list.append(name + '=' + '********')
         else:
-            args_list.append(name + "=" + str(value))
-    logging.debug("main: command-line args after parsing: {}".format(args_list))
+            args_list.append(name + '=' + str(value))
+    logging.debug('main: command-line args after parsing: {}'.format(args_list))
 
     rhost = args.rhost
     output_dir = args.directory
@@ -525,10 +528,23 @@ def main(argv):
         auth = HTTPBasicAuth(args.user, args.password)
     # token = args.token
     nossl = args.nossl
-    verify = not args.nochkcert
+    verify = True
+    if args.nochkcert:
+        verify = False
+    elif args.ca_bundle is not None:
+        verify = args.ca_bundle
 
     # dictionary for requests kwargs
-    requests_dict = {"auth": auth, "verify": verify, "headers": {'OData-Version': '4.0'}}
+    requests_dict = {'auth': auth, 'verify': verify, 'headers': {'OData-Version': '4.0'}}
+    if args.http_proxy is not None or args.https_proxy is not None:
+        if args.http_proxy is None:
+            proxy_dict = {'https': args.https_proxy}
+        elif args.https_proxy is None:
+            proxy_dict = {'http': args.http_proxy}
+        else:
+            proxy_dict = {'http': args.http_proxy, 'https': args.https_proxy}
+        requests_dict.update({'proxies': proxy_dict})
+    logging.debug('main: requests kwargs dictionary: {}'.format(requests_dict))
 
     service_root = get_service_root(rhost, auth=auth, verify=verify, nossl=nossl)
 
