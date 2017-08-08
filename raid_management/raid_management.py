@@ -25,15 +25,17 @@ def proto(nossl=True):
 
 
 def get_uri(resource_name, data):
-    if resource_name in data:
+    if resource_name is None:
+        resource = data
+    elif resource_name in data:
         resource = data.get(resource_name)
-        if '@odata.id' in resource:
-            return resource.get('@odata.id')
-        else:
-            logging.warning("get_uri: '@odata.id' not found in resource '{}'".format(resource_name))
-            return None
     else:
         logging.warning("get_uri: Resource '{}' not found in data payload".format(resource_name))
+        return None
+    if '@odata.id' in resource:
+        return resource.get('@odata.id')
+    else:
+        logging.warning("get_uri: '@odata.id' not found in resource '{}'".format(resource_name))
         return None
 
 
@@ -216,26 +218,31 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
         # StorageControllers
         controllers = store_data.get('StorageControllers')
         logging.debug("process_storage: 'StorageControllers' = {}".format(controllers))
-        for controller in controllers:
-            logging.debug("process_storage: controller = {}".format(controller))
-            if '@odata.id' in controller:
-                controller_uri = controller.get('@odata.id')
-                if '#' in controller_uri and '@odata.type' in controller:
+        if controllers is not None:
+            log_success(results, "Read Controllers")
+            for controller in controllers:
+                logging.debug("process_storage: controller = {}".format(controller))
+                if '@odata.id' in controller:
+                    controller_uri = controller.get('@odata.id')
+                    if '#' in controller_uri and '@odata.type' in controller:
+                        # inline case
+                        ctrl_success, ctrl_data = True, controller
+                    else:
+                        # follow uri reference case
+                        resource = get_resource(rhost, controller_uri, results, validator, auth=auth, verify=verify,
+                                                nossl=nossl)
+                        ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
+                    if ctrl_success and ctrl_data is not None:
+                        log_success(results, "Read Controller")
+                    else:
+                        log_error(results, "process_storage", "Read Controller",
+                                  "Unable to read controller resource from uri {}".format(controller_uri))
+                else:
                     # inline case
-                    ctrl_success, ctrl_data = True, controller
-                else:
-                    # follow uri reference case
-                    resource = get_resource(rhost, controller_uri, results, validator, auth=auth, verify=verify,
-                                            nossl=nossl)
-                    ctrl_success, ctrl_name, ctrl_uri, ctrl_data = resource
-                if ctrl_success and ctrl_data is not None:
                     log_success(results, "Read Controller")
-                else:
-                    log_error(results, "process_storage", "Read Controller",
-                              "Unable to read controller resource from uri {}".format(controller_uri))
-            else:
-                # inline case
-                log_success(results, "Read Controller")
+        else:
+            log_error(results, "process_storage", "Read Controllers",
+                      "'StorageControllers' resource not found from uri {}".format(store_uri))
         # Drives
         hot_spare = None
         drives = store_data.get('Drives')
@@ -287,7 +294,8 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
             modify_volume(rhost, volumes_uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator,
                           auth=auth, verify=verify, nossl=nossl)
         else:
-            log_error(results, "process_storage", "Read Volumes", "'Volumes' uri not found")
+            log_error(results, "process_storage", "Read Volumes", "'Volumes' uri not found for storage {} at uri {}"
+                      .format(store_name, store_uri))
     else:
         log_error(results, "process_storage", "Read Storage Member",
                   "Unable to get data payload for storage {} at uri {}".format(store_name, store_uri))
@@ -317,6 +325,144 @@ def process_system(system, rhost, results, validator, auth=None, verify=True, no
     else:
         log_error(results, "process_system", "Read System",
                   "Unable to get data payload for system {} at uri {}".format(sys_name, sys_uri))
+
+
+def process_zone(zone, rhost, results, validator, auth=None, verify=True, nossl=False):
+    zone_success, zone_name, zone_uri, zone_data = zone
+    logging.debug("process_zone: zone name = {}, uri = {}, successfully read = {}"
+                  .format(zone_name, zone_uri, zone_success))
+    if zone_success and zone_data is not None:
+        log_success(results, "Read ResourceZones Member")
+        logging.debug("process_zone: zone data = {}".format(zone_data))
+        if "@Redfish.CollectionCapabilities" in zone_data:
+            log_success(results, "Read Zone CollectionCapabilities")
+            cap_coll = zone_data.get("@Redfish.CollectionCapabilities")
+            if "Capabilities" in cap_coll:
+                log_success(results, "Read Zone Capabilities")
+                capabilities = cap_coll.get("Capabilities")
+                for capability in capabilities:
+                    cap_uri = get_uri('CapabilitiesObject', capability)
+                    if cap_uri is not None:
+                        log_success(results, "Read Zone CapabilitiesObject")
+                        logging.debug("process_zone: Resource Zone {}, 'CapabilitiesObject' uri = {}"
+                                      .format(zone_name, cap_uri))
+                        # TODO: get/process capability resource
+                        print("process_zone: Resource Zone {}, 'CapabilitiesObject' uri = {}"
+                              .format(zone_name, cap_uri))
+                    else:
+                        log_error(results, "process_zone", "Read Zone CapabilitiesObject",
+                                  "'CapabilitiesObject' not found in '@Redfish.CollectionCapabilities' at uri {}"
+                                  .format(zone_uri))
+            else:
+                log_error(results, "process_zone", "Read Zone Capabilities",
+                          "'Capabilities' not found in '@Redfish.CollectionCapabilities' at uri {}".format(zone_uri))
+        else:
+            log_error(results, "process_zone", "Read Zone CollectionCapabilities",
+                      "'@Redfish.CollectionCapabilities' not found at uri {}".format(zone_uri))
+    else:
+        log_error(results, "process_zone", "Read ResourceZones Member",
+                  "Unable to get data payload for ResourceZones member {} at uri {}".format(zone_name, zone_uri))
+
+
+def process_block(block, rhost, results, validator, auth=None, verify=True, nossl=False):
+    block_success, block_name, block_uri, block_data = block
+    logging.debug("process_block: block name = {}, uri = {}, successfully read = {}"
+                  .format(block_name, block_uri, block_success))
+    if block_success and block_data is not None:
+        log_success(results, "Read ResourceBlocks Member")
+        logging.debug("process_block: block data = {}".format(block_data))
+        # Only interested in composable 'Storage' resources
+        if 'Storage' in block_data:
+            storage_list = block_data.get('Storage')
+            if len(storage_list) > 0:
+                for storage in storage_list:
+                    storage_uri = get_uri(None, storage)
+                    if storage_uri is not None:
+                        log_success(results, "Read Block Storage URI")
+                        logging.debug("process_block: Resource Block {}, 'Storage' uri = {}"
+                                      .format(block_name, storage_uri))
+                        # TODO: get/process Storage resource
+                        print("process_block: Resource Block {}, 'Storage' uri = {}"
+                              .format(block_name, storage_uri))
+                    else:
+                        log_error(results, "process_block", "Read Block Storage URI",
+                                  "'Storage' URI not found in ResourceBlocks member at uri {}"
+                                  .format(block_uri))
+                if 'Links' in block_data:
+                    log_success(results, "Read Block Links")
+                    links = block_data.get('Links')
+                    if 'Zones' in links:
+                        zones = links.get('Zones')
+                        if len(zones) > 0:
+                            log_success(results, "Read links from Block to Zones")
+                            for zone in zones:
+                                zone_uri = get_uri(None, zone)
+                                if zone_uri is not None:
+                                    log_success(results, "Read Zone URI referenced from Block")
+                                    logging.debug("process_block: Resource Block {} references Zone uri {}"
+                                                  .format(block_name, zone_uri))
+                                    # TODO: get/process Zones reference
+                                    print("process_block: Resource Block {} references Zone uri {}"
+                                          .format(block_name, zone_uri))
+                                else:
+                                    log_error(results, "process_block", "Read Zone URI referenced from Block",
+                                              "Unable to read Zones URI in Links for ResourceBlocks member at uri {}"
+                                              .format(block_uri))
+                        else:
+                            log_error(results, "process_block", "Read links from Block to Zones",
+                                      "Zones resource empty in Links for ResourceBlocks member at uri {}"
+                                      .format(block_uri))
+                    else:
+                        log_error(results, "process_block", "Read links from Block to Zones",
+                                  "Zones resource not found in Links for ResourceBlocks member at uri {}"
+                                  .format(block_uri))
+                else:
+                    log_error(results, "process_block", "Read Block Links",
+                              "Links resource not found in ResourceBlocks member at uri {}"
+                              .format(block_uri))
+
+        else:
+            logging.debug("process_block: No 'Storage' resources referenced from ResourceBlocks member {} at uri {}"
+                          .format(block_name, block_uri))
+    else:
+        log_error(results, "process_block", "Read ResourceBlocks Member",
+                  "Unable to get data payload for ResourceBlocks member {} at uri {}".format(block_name, block_uri))
+
+
+def process_composition(composition, rhost, results, validator, auth=None, verify=True, nossl=False):
+    comp_success, comp_name, comp_uri, comp_data = composition
+    logging.debug("process_composition: composition name = {}, uri = {}, successfully read = {}"
+                  .format(comp_name, comp_uri, comp_success))
+    blocks_uri = get_uri('ResourceBlocks', comp_data)
+    if blocks_uri is not None:
+        logging.debug("process_composition: 'ResourceBlocks' uri = {}".format(blocks_uri))
+        resource = get_resource(rhost, blocks_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
+        blocks_success, blocks_name, blocks_uri, blocks_data = resource
+        if blocks_success and blocks_data is not None:
+            log_success(results, "Read ResourceBlocks")
+            blocks_list = get_members(blocks_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+            for block in blocks_list:
+                process_block(block, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+        else:
+            log_error(results, "process_composition", "Read ResourceBlocks",
+                      "Unable to read 'ResourceBlocks' resource from uri {}".format(blocks_uri))
+    else:
+        log_error(results, "process_composition", "Read ResourceBlocks", "'ResourceBlocks' uri not found")
+    zones_uri = get_uri('ResourceZones', comp_data)
+    if zones_uri is not None:
+        logging.debug("process_composition: 'ResourceZones' uri = {}".format(zones_uri))
+        resource = get_resource(rhost, zones_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
+        zones_success, zones_name, zones_uri, zones_data = resource
+        if zones_success and zones_data is not None:
+            log_success(results, "Read ResourceZones")
+            zones_list = get_members(zones_data, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+            for zone in zones_list:
+                process_zone(zone, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+        else:
+            log_error(results, "process_composition", "Read ResourceZones",
+                      "Unable to read 'ResourceZones' resource from uri {}".format(zones_uri))
+    else:
+        log_error(results, "process_composition", "Read ResourceZones", "'ResourceZones' uri not found")
 
 
 def get_service_root(rhost, auth=None, verify=True, nossl=False):
@@ -381,6 +527,9 @@ def main(argv):
     nossl = args.nossl
     verify = not args.nochkcert
 
+    # dictionary for requests kwargs
+    requests_dict = {"auth": auth, "verify": verify, "headers": {'OData-Version': '4.0'}}
+
     service_root = get_service_root(rhost, auth=auth, verify=verify, nossl=nossl)
 
     results = Results("RAID Management Checker", service_root)
@@ -388,10 +537,25 @@ def main(argv):
         results.set_output_dir(output_dir)
     results.add_cmd_line_args(args_list)
 
-    validator = SchemaValidation(rhost, service_root, results, auth=auth, nossl=nossl)
+    validator = SchemaValidation(rhost, service_root, results, auth=auth, verify=verify, nossl=nossl)
 
     if service_root is not None:
         log_success(results, "Read Service Root")
+        # process CompositionService
+        comp_uri = get_uri('CompositionService', service_root)
+        if comp_uri is not None:
+            composition = get_resource(rhost, comp_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
+            success, name, uri, data = composition
+            if success and data is not None:
+                log_success(results, "Read CompositionService")
+                process_composition(composition, rhost, results, validator, auth=auth, verify=verify, nossl=nossl)
+            else:
+                log_error(results, "main", "Read CompositionService",
+                          "Unable to read 'CompositionService' resource from target system {}".format(rhost))
+        else:
+            log_error(results, "main", "Read CompositionService",
+                      "Unable to get 'CompositionService' URI from target system {}".format(rhost))
+        # process Systems
         systems_uri = get_uri('Systems', service_root)
         if systems_uri is not None:
             systems = get_resource(rhost, systems_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
