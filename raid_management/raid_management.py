@@ -116,46 +116,65 @@ def get_members(data, rhost, results, validator, auth=None, verify=True, nossl=F
     return member_list
 
 
+def delete_volume(rhost, uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator, auth=None,
+                  verify=True, nossl=False):
+    logging.debug("delete_volume: Exercising Volumes uri {}".format(uri))
+    logging.debug("delete_volume: auth = {}".format(auth))
+
+    # TODO: Why do we need to specify creds in the body? Figure this out.
+    credentials = None
+    if auth is not None:
+        logging.debug("delete_volume: username = {}".format(auth.username))
+        logging.debug("delete_volume: password = {}".format(auth.password))
+        credentials = {"username": auth.username, "password": auth.password}
+
+        # Notes:
+        # If resource can never be deleted, a 405 is returned
+        # If DELETE specifies a collection, a 405 is returned
+        # 404 for bad request
+        # 202 for accepted - should be a Location header for a Task to query
+        # 200 for ok
+        # Deleted resource representation (content) may be returned in response body
+        if existing_vol_uri is not None:
+            logging.debug("delete: deleting existing volume at {}".format(existing_vol_uri))
+            try:
+                r = requests.delete(proto(nossl=nossl) + '://' + rhost + existing_vol_uri,
+                                    auth=auth, verify=verify, json=credentials)
+                logging.debug("delete_volume: status code from DELETE volume = {}".format(r.status_code))
+                logging.debug("delete_volume: response from DELETE volume = {}".format(r))
+                if r.status_code == requests.codes.bad_request:
+                    logging.debug("delete_volume: response headers = {}".format(r.headers))
+                    logging.debug("delete_volume: response reason = {}".format(r.reason))
+                    logging.debug("delete_volume: response text = {}".format(r.text))
+                    logging.debug("delete_volume: response JSON = {}".format(r.json()))
+                elif r.status_code == requests.codes.accepted:
+                    logging.debug("delete_volume: response headers = {}".format(r.headers))
+                    logging.debug("delete_volume: response text = {}".format(r.text))
+                r.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                log_error(results, "delete_volume", "Delete Volume",
+                          "Exception received while tying to delete Volume at uri {}, error = {}"
+                          .format(existing_vol_uri, e))
+        else:
+            logging.debug("delete_volume: no existing volume to delete")
+
+
 def modify_volume(rhost, uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator, auth=None,
                   verify=True, nossl=False):
     logging.debug("modify_volume: Exercising Volumes uri {}".format(uri))
     logging.debug("modify_volume: auth = {}".format(auth))
+
     credentials = None
     if auth is not None:
         logging.debug("modify_volume: username = {}".format(auth.username))
         logging.debug("modify_volume: password = {}".format(auth.password))
         credentials = {"username": auth.username, "password": auth.password}
 
-    # TODO: DELETE an existing volume
-    # Notes:
-    # If resource can never be deleted, a 405 is returned
-    # If DELETE specifies a collection, a 405 is returned
-    # 404 for bad request
-    # 202 for accepted - should be a Location header for a Task to query
-    # 200 for ok
-    # Deleted resource representation (content) may be returned in response body
-    if existing_vol_uri is not None:
-        logging.debug("modify_volume: deleting existing volume at {}".format(existing_vol_uri))
-        try:
-            r = requests.delete(proto(nossl=nossl) + '://' + rhost + existing_vol_uri,
-                                auth=auth, verify=verify, json=credentials)
-            logging.debug("modify_volume: status code from DELETE volume = {}".format(r.status_code))
-            logging.debug("modify_volume: response from DELETE volume = {}".format(r))
-            if r.status_code == requests.codes.bad_request:
-                logging.debug("modify_volume: response headers = {}".format(r.headers))
-                logging.debug("modify_volume: response reason = {}".format(r.reason))
-                logging.debug("modify_volume: response text = {}".format(r.text))
-                logging.debug("modify_volume: response JSON = {}".format(r.json()))
-            elif r.status_code == requests.codes.accepted:
-                logging.debug("modify_volume: response headers = {}".format(r.headers))
-                logging.debug("modify_volume: response text = {}".format(r.text))
-            r.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            log_error(results, "modify_volume", "Delete Volume",
-                      "Exception received while tying to delete Volume at uri {}, error = {}"
-                      .format(existing_vol_uri, e))
-    else:
-        logging.debug("modify_volume: no existing volume to delete")
+    # Delete existing volume
+    # TODO: Need boolean confirming delete operation OK
+    delete_volume(rhost, uri, existing_vol_uri, existing_vol_data, hot_spare, results, validator,
+                  auth=auth, verify=verify, nossl=nossl)
+
     # TODO: POST to create volume
     payload = {"@odata.context": "/redfish/v1/$metadata#Systems/Members/5966929f180b1301003d47b6/Storage/Members/1/Volumes/$entity",
                "@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Volumes/0",
@@ -179,7 +198,7 @@ def modify_volume(rhost, uri, existing_vol_uri, existing_vol_data, hot_spare, re
                         {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/0"},
                         {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/1"},
                         {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/2"},
-                        {"@odata.id":"/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/3"}
+                        {"@odata.id": "/redfish/v1/Systems/5966929f180b1301003d47b6/Storage/1/Drives/3"}
                     ]
                     }
                }
@@ -245,30 +264,35 @@ def process_storage(storage, rhost, results, validator, auth=None, verify=True, 
                       "'StorageControllers' resource not found for storage {} at uri {}".format(store_name, store_uri))
         # Drives
         hot_spare = None
-        drives = store_data.get('Drives')
-        logging.debug("process_storage: 'Drives' = {}".format(drives))
-        for drive in drives:
-            logging.debug("process_storage: drive = {}".format(drive))
-            if '@odata.id' in drive:
-                drive_uri = drive.get('@odata.id')
-                if '#' in drive_uri and '@odata.type' in drive:
+        if 'Drives' in store_data:
+            log_success(results, "Read Drives")
+            drives = store_data.get('Drives')
+            logging.debug("process_storage: 'Drives' = {}".format(drives))
+            for drive in drives:
+                logging.debug("process_storage: drive = {}".format(drive))
+                if '@odata.id' in drive:
+                    drive_uri = drive.get('@odata.id')
+                    if '#' in drive_uri and '@odata.type' in drive:
+                        # inline case
+                        drive_success, drive_data = True, drive
+                    else:
+                        # follow uri reference case
+                        resource = get_resource(rhost, drive_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
+                        drive_success, drive_name, drive_uri, drive_data = resource
+                    if drive_success and drive_data is not None:
+                        log_success(results, "Read Drive")
+                        if hot_spare is None:
+                            # save a drive_uri for use as a RAID hot spare
+                            hot_spare = drive_uri
+                    else:
+                        log_error(results, "process_storage", "Read Drive",
+                                  "Unable to read drive resource from uri {}".format(drive_uri))
+                else:
                     # inline case
-                    drive_success, drive_data = True, drive
-                else:
-                    # follow uri reference case
-                    resource = get_resource(rhost, drive_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
-                    drive_success, drive_name, drive_uri, drive_data = resource
-                if drive_success and drive_data is not None:
                     log_success(results, "Read Drive")
-                    if hot_spare is None:
-                        # save a drive_uri for use as a RAID hot spare
-                        hot_spare = drive_uri
-                else:
-                    log_error(results, "process_storage", "Read Drive",
-                              "Unable to read drive resource from uri {}".format(drive_uri))
-            else:
-                # inline case
-                log_success(results, "Read Drive")
+        else:
+            log_error(results, "process_storage", "Read Drives",
+                      "'Drives' resource not found for storage {} at uri {}".format(store_name, store_uri))
         # Volumes
         existing_vol_uri, existing_vol_data = None, None
         volumes_uri = get_uri('Volumes', store_data)
@@ -309,7 +333,7 @@ def process_system(system, rhost, results, validator, auth=None, verify=True, no
         log_success(results, "Read System")
         storage_uri = get_uri('Storage', sys_data)
         if storage_uri is not None:
-            logging.debug("process_system: 'Storage' uri = {}".format(storage_uri))
+            logging.debug("process_system: Storage uri = {}".format(storage_uri))
             resource = get_resource(rhost, storage_uri, results, validator, auth=auth, verify=verify, nossl=nossl)
             store_success, store_name, store_uri, store_data = resource
             if store_success and store_data is not None:
